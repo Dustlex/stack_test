@@ -1,0 +1,86 @@
+services:
+  nginx: # есть неофициальные почти готовые имейджи по типу nginxproxy но пока так
+    image: nginx:1.29 # конкретная версия чтоб небыло latest
+    ports:
+     - 80:80
+     - 443:443
+    networks:
+     - stack_net
+    volumes:
+      - ./wp:/var/www/html
+      - ./nginx.conf:/etc/nginx/nginx.conf # подправленный конфиг для реверс прокси
+    depends_on: 
+     - httpd
+
+  httpd:
+    image: httpd_custom:1.0 # это уже мой кастомный апач с парой надстроек
+    volumes: # понадобится и для fpm т.к. не уверен что стоит брать готовые неофициальные сборки
+     - ./wp:/var/www/html
+     - ./httpd.conf:/usr/local/apache2/conf/httpd.conf
+     - /etc/passwd:/etc/passwd:ro # только рид онли для безопасности
+     - /etc/group:/etc/group:ro
+     - /etc/shadow:/etc/shadow:ro
+       #ports:
+       #- 80:80
+       #- 443:443
+    networks:
+      - stack_net
+    depends_on:
+      - php # пусть поднимается после пыхи
+
+  php:
+    image: thecodingmachine/php:8.2-v4-fpm # это 8.2 fpm, официальный слишком голый, делал свой кастом и он рабочий, но из-за configure и make слишком долго собирает даже базовые расширения. Его докер файл оставил, но в сборке использовал публичный популярный неофициальный образ https://hub.docker.com/r/thecodingmachine/php
+    volumes:
+     - ./wp:/var/www/html
+    environment: # привет getenv
+      WP_DB_NAME: ${WP_DB_NAME}
+      WP_DB_USER: ${WP_DB_USER}
+      WP_DB_PASSWORD: ${WP_DB_PASSWORD}
+      WP_DB_HOST: ${WP_DB_HOST}
+      WP_AUTH_KEY: ${WP_AUTH_KEY}
+      WP_SECURE_AUTH_KEY: ${WP_SECURE_AUTH_KEY}
+    networks:
+     - stack_net
+    depends_on: 
+     - mysql
+
+  mysql: # имя контейнера при подлкючении не забывать
+    image: mysql:8.0
+    environment: # конкретно так нужды нет, но пусть будет
+      MYSQL_ROOT_PASSWORD: ${SQL_ROOT_PASSWORD} 
+      MYSQL_DATABASE: ${WP_DB_NAME}
+      MYSQL_USER: ${WP_DB_USER}
+      MYSQL_PASSWORD: ${WP_DB_PASSWORD}
+    volumes:
+      - ./db/wp_db.sql:/docker-entrypoint-initdb.d/wp_db.sql # фишка официального mysql образа он может сам хватать дампы лежащие в docker-entrypoint-initdb.d при запуске и импортировать их в бд что в переменной MYSQL_DATABASE, а если в дампе есть строка CREATE DATABASE то вообще туда. 
+    #command: bash -c "sleep 20 && mysql -h localhost -u'wp_db' wp_db -p'fuck' < /db/wp_db.sql" # убивает основной энтрипоинт
+    networks:
+     - stack_net
+  
+  node_exporter:
+    image: prom/node-exporter:v1.10.2
+    ports:
+     - 9100:9100
+    pid: host # оставляем namespace хоста, убирая изоляцию процессов, чтоб он мог читать процессы основы
+    networks:
+     - stack_net
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    volumes:
+     - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+     - 9090:9090
+    networks:
+     - stack_net
+
+  grafana: # prometheus читает нод экспортер, графана читает прометеус для создания графиков
+    image: grafana/grafana:12.1
+    ports: 
+     - 3000:3000
+    networks:
+     - stack_net
+
+networks:
+  stack_net:
+    driver: bridge

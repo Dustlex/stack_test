@@ -1,0 +1,7 @@
+- name:
+  hosts: deploy
+  roles: 
+    - role: stack
+      tags: stack
+    - role: deploy
+      tags: deploy 

@@ -1,0 +1,170 @@
+- name: user_bare
+  user: &def_usr
+    name: bare
+    shell: /bin/bash
+    state: present
+    generate_ssh_key: true # пригодится
+
+- name: user_project
+  user: 
+    <<: *def_usr
+    name: project
+    groups: docker # пригодится для запуска контейнеров
+    append: yes # добавляем в группу не удаляя для пользователя остальные
+
+- name: project_copy
+  #copy: # этот парень был из тех, кто копирует 10кб/с
+  synchronize:
+    src: ./project
+    dest: /home/project/
+    recursive: true
+    delete: yes # удалим ненужное если есть
+    rsync_opts:
+     - "--chown=project:project"
+
+- name: server_ip # костыль конкретно для WP чтоб избежать переадресации
+  shell: sed -i -e 's#{{ old_ip }}#{{ ansible_host }}#g' /home/project/project/db/wp_db.sql # но тут и command бы переварил
+  vars:
+    old_ip: 62.113.101.138 # пока так, будет больше переменных мб перемещю их в отдельный файл для роли
+
+- name: image_build # билд кастомного апача для дебага
+  community.docker.docker_image:
+     name: httpd_custom:1.0
+     tag: 1.0
+     state: present
+     source: build
+     build:
+      path: /home/project/project
+      dockerfile: Dockerfile1_httpd
+ 
+- name: bare_repo_dir
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: bare
+    group: bare
+    mode: 755
+  loop: 
+    - /home/bare/repo
+    - /home/bare/repo/wp.git
+
+- name: bare_repo_init
+  shell: |
+    cd /home/bare/repo
+    git init --bare wp.git
+  become_user: bare
+
+- name: fix_bare_repo
+  file:
+    path: /home/bare/repo/wp.git
+    owner: bare
+    group: bare
+    recurse: yes
+
+- name: norm_git_wp_vault
+  shell: |
+    cd /home/project/project/wp/
+    git init
+    git config --global --add safe.directory /home/project/project/wp
+    git remote add bare_repo bare@{{ ansible_host }}:/home/bare/repo/wp.git
+  become_user: project
+
+- name: bare_key
+  command: cat /home/bare/.ssh/id_rsa.pub
+  register: bare_key
+
+- name: project_key
+  command: cat /home/project/.ssh/id_rsa.pub
+  register: project_key
+
+#- name: debug 
+  #debug:
+  #  var: bare_key.stdout
+
+- name: add bare_key for project_user
+  authorized_key:
+    user: project
+    key: "{{ bare_key.stdout }}"
+    state: present
+
+- name: add project_key for bare_user
+  authorized_key:
+    user: bare
+    key: "{{ project_key.stdout  }}"
+    state: present
+
+- name: fix_permissions
+  file:
+    path: /home/project
+    state: directory
+    owner: project
+    group: project
+    mode: "0755"
+    recurse: yes
+
+- name: fix_owner # become_user не ставит владельца на указанного
+  file:
+    path: /home/project/project/wp/.git
+    owner: project
+    group: project
+    recurse: yes
+  become_user: root
+
+- name: fix ssh after fix
+  file:
+    path: /home/project/.ssh
+    owner: project
+    group: project
+    mode: "0700"
+
+- name: fix key private
+  file:
+    path: /home/project/.ssh/id_rsa
+    owner: project
+    group: project
+    mode: "0600"
+
+- name: fix key public
+  file:
+    path: /home/project/.ssh/id_rsa.pub
+    owner: project
+    group: project
+    mode: "0644"
+ 
+- name: push_scrip # костыль, чистым ансибл через шелл это гемор, а использовать не встроенные модули - лишний шаг с установкой
+  copy:
+    dest: /home/project/project/wp/push.sh
+    content: |
+      #!/bin/bash
+      cd /home/project/project/wp
+      git add .
+      git commit -m "deploy"
+      git push bare_repo master -f
+    owner: project
+    group: project
+    mode: '0755'
+ 
+- name: run_push
+  shell: |
+    cd /home/project/project/wp
+    sudo -u project ./push.sh
+
+- name: delete_push
+  file:
+    path: /home/project/project/wp/push.sh
+    state: absent
+
+- name: post_recive_hook # хук для того чтобы после получения любого пуша, репозиторий в контейнере обновлялся (контейнер имеет прямое хранилище к этому репозиторию)
+  copy:
+    dest: /home/bare/repo/wp.git/hooks/post-recive
+    content:
+      #!/bin/bash
+      ssh -i /home/bare/.ssh/id_rsa -o StrictHostKeyChecking=no   project@{{ ansible_host }} "cd /home/project/project/wp && git fetch --all && git reset --hard bare_repo/master"
+    owner: bare
+    group: bare
+    mode: '0755'
+
+- name: compose_up
+  command: docker compose up -d
+  args:
+    chdir: "/home/project/project"

@@ -1,0 +1,42 @@
+    - name: installation_block
+      block:
+        - name: apt_preparation 
+          apt: #просто чистим возможные конфликты
+            name:
+             - docker.io
+             - docker-doc
+             - docker-compose
+             - docker-compose-v2
+             - podman-docker
+            state: absent
+        - name: add_key_block
+          apt_key: #добавляем ключ для репа модулем apt_key
+            url: https://download.docker.com/linux/ubuntu/gpg
+            state: present
+        - name: add_docker_repository_to_apt
+          apt_repository: # тут сложнее, добавляем репозиторий этим модулем, после ссылки - переменная из ansible_facts (инфа о системе собранная ансибл), эта переменная - кодовое имя системы для репозитория
+            repo: deb https://download.docker.com/linux/ubuntu {{ansible_facts.lsb.codename}} stable # пробелы внезапно важны
+            state: present
+        - name: docker installation
+          apt: #после добавления ключа и репозитория, ставим все модули
+            name: 
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+            update_cache: yes # обновим кеш пакетного менеджера (apt get update)
+        - debug: # просто вывод псевдонима системы, для нас, на работу не влияет
+            var: ansible_facts.lsb.codename
+      become: yes
+    - name: apply_and_test_block
+      block:
+        - name: reboot 
+          reboot: # ребут без доп параметров, модуль просто ребутит
+        - name: run_docker_test #кустарный тест через command, вывод всего что есть, мы пихаем в массив в переменную check1
+          command: "docker run hello-world"
+          register: check1 # пихаем
+        - debug:
+           var: check1.failed # кустарная проверка, в массиве есть параметр failed, который получает true или false при исполнении. Т.е. тут должен быть один ответ (failed:false), ну а если тру то пизда
+      become: yes
