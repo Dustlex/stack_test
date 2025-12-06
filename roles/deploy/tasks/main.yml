@@ -137,9 +137,11 @@
     content: |
       #!/bin/bash
       cd /home/project/project/wp
+      git config user.name "project"
+      git config user.email "project@example.local"
       git add .
       git commit -m "deploy"
-      git push bare_repo master -f
+      yes | git push bare_repo master -f
     owner: project
     group: project
     mode: '0755'
